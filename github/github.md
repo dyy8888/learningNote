@@ -2,7 +2,7 @@
 
 ## 基础知识
 
-![image-20230226135712052](E:\学习资料\自学课程\github\images\image-20230226135712052.png)
+![image-20230226135712052](github.assets/image-20230226135712052.png)
 
 ### 安装git
 
@@ -370,7 +370,7 @@ git log --graph
 你和你的小伙伴们每个人都在`dev`分支上干活，每个人都有自己的分支，时不时地往`dev`分支上合并就可以了。
 
 所以，团队合作的分支看起来就像这样：
-![null](E:\学习资料\自学课程\github\images\m_1c9a5034b14f100858ac21332a89c8f3_r.png)
+![null](github.assets/m_1c9a5034b14f100858ac21332a89c8f3_r.png)
 
 `Git`分支十分强大，在团队开发中应该充分应用。
 
