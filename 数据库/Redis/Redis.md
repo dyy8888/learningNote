@@ -55,7 +55,7 @@ sudo apt-get install redis
 
 ### Hash类型
 
-![image-20230222073216104](E:\学习资料\自学课程\数据库\Redis\images\480g7 win10home64.wim)
+![image-20230222073216104](Redis.assets/480g7 win10home64.wim)
 
 - `HSET key field value`:添加或者修改hash类型key的field的值
 - `HGET key field`：获取一个hash类型key的field的值
@@ -185,7 +185,7 @@ sudo apt-get install redis
   - 实现复杂
   - 存在误判可能
 
-![image-20230223184311871](E:\学习资料\自学课程\数据库\Redis\images\image-20230223184311871.png)
+![image-20230223184311871](Redis.assets/image-20230223184311871.png)
 
 ### 缓存雪崩
 
@@ -203,7 +203,7 @@ sudo apt-get install redis
 - 互斥锁
 - 逻辑过期
 
-![image-20230223203443795](E:\学习资料\自学课程\数据库\Redis\images\image-20230223203443795.png)
+![image-20230223203443795](Redis.assets/image-20230223203443795.png)
 
 ![image-20230223203522681](E:\学习资料\自学课程\数据库\Redis\images\image-20230223203522681.png)
 
@@ -238,7 +238,7 @@ redis自增ID策略：
 - 高可用
 - 安全性
 
-![image-20230224093739155](E:\学习资料\自学课程\数据库\Redis\images\image-20230224093739155.png)
+![image-20230224093739155](Redis.assets/image-20230224093739155.png)
 
 ### 基于Redis的分布式锁
 
@@ -264,22 +264,22 @@ redis自增ID策略：
     DEL key
     ```
 
-<img src="E:\学习资料\自学课程\数据库\Redis\images\image-20230224094736798.png" alt="image-20230224094736798" style="zoom: 33%;" />
+<img src="Redis.assets/image-20230224094736798.png" alt="image-20230224094736798" style="zoom: 33%;" />
 
 误删锁问题：
 
-![image-20230224095503770](E:\学习资料\自学课程\数据库\Redis\images\image-20230224095503770.png)
+![image-20230224095503770](Redis.assets/image-20230224095503770.png)
 
 在构建锁的时候加入标志位，判断释放的锁是不是由自己所持有。
 
 1. 在获取锁时存入线程标示（UUID表示）
 2. 释放锁式判断
 
-![image-20230224095626067](E:\学习资料\自学课程\数据库\Redis\images\image-20230224095626067.png)
+![image-20230224095626067](Redis.assets/image-20230224095626067.png)
 
 原子性问题：释放锁时发生了阻塞。应该保证获取锁和释放锁的原子性
 
-![image-20230224101526100](E:\学习资料\自学课程\数据库\Redis\images\image-20230224101526100.png)
+![image-20230224101526100](Redis.assets/image-20230224101526100.png)
 
 解决办法：Redis+Lua
 
@@ -345,11 +345,11 @@ Redis提供三种不同方式实现消息队列
 
 发送消息命令-`XADD`
 
-![image-20230224142602319](E:\学习资料\自学课程\数据库\Redis\images\image-20230224142602319.png)
+![image-20230224142602319](Redis.assets/image-20230224142602319.png)
 
 读取消息-`XREAD`
 
-![image-20230224142723079](E:\学习资料\自学课程\数据库\Redis\images\image-20230224142723079.png)
+![image-20230224142723079](Redis.assets/image-20230224142723079.png)
 
 `BUG`：漏读现象，当指定起始ID为`$`时，代表读取最新的消息，如果处理一条消息的过程中，又有超过1条以上的消息到达队列，则下次获取时也只能获取到最新的一条，会出现漏读消息的问题
 
@@ -402,7 +402,7 @@ XREADGROUP GROUP group consumer [COUNT count] [BLOCK milliseconds] [NOACK] STREA
 	#其他：根据指定id从pending-list中获取已消费但未确认的消息
 ```
 
-![image-20230224151938961](E:\学习资料\自学课程\数据库\Redis\images\image-20230224151938961.png)
+![image-20230224151938961](Redis.assets/image-20230224151938961.png)
 
 ## Feed流模式
 
@@ -420,17 +420,17 @@ Feed流产品有两种常见模式：
 
 拉模式：读扩散
 
-![image-20230224161804456](E:\学习资料\自学课程\数据库\Redis\images\image-20230224161804456.png)
+![image-20230224161804456](Redis.assets/image-20230224161804456.png)
 
 推模式：写扩散
 
-![image-20230224161913293](E:\学习资料\自学课程\数据库\Redis\images\image-20230224161913293.png)
+![image-20230224161913293](Redis.assets/image-20230224161913293.png)
 
 推拉结合模式：也叫读写混合，兼具推和拉两种模式的优点
 
-![image-20230224162044882](E:\学习资料\自学课程\数据库\Redis\images\image-20230224162044882.png)
+![image-20230224162044882](Redis.assets/image-20230224162044882.png)
 
-![image-20230224162121449](E:\学习资料\自学课程\数据库\Redis\images\image-20230224162121449.png)
+![image-20230224162121449](Redis.assets/image-20230224162121449.png)
 
 ## GEO数据结构
 
@@ -514,7 +514,7 @@ dir ./
 - 当主进程执行读操作时，访问共享内存
 - 当主进程执行写操作时，则会拷贝一份数据，执行写操作
 
-![image-20230225142720382](E:\学习资料\自学课程\数据结构与算法\image\image-20230225142720382.png)
+![image-20230225142720382](Redis.assets/image-20230225142720382.png)
 
 基本流程：
 
@@ -560,7 +560,7 @@ auto-aof-rewrite-percentage 100
 auto-aof-rewrite-min-size 64mb
 ```
 
-![image-20230226133603547](E:\学习资料\自学课程\数据结构与算法\image\image-20230226133603547.png)
+![image-20230226133603547](Redis.assets/image-20230226133603547.png)
 
 ### Redis主从
 
@@ -608,11 +608,11 @@ redis-server 7003/redis.conf
 - `Replication ID`：简称`replid`，是数据集的标记，id一致则说明是同一数据集。每一个master都有唯一的replid，slave则会继承master节点的replid
 - `offset`：偏移量，随着记录在`repl_baklog`中的数据增多而逐渐增大。slave完成同步时也会记录当前同步的offset，如果slave的offset小于master的offset，说明slave数据落后于master，需要更新
 
-![image-20230227203415094](E:\学习资料\自学课程\数据库\Redis\images\image-20230227203415094.png)
+![image-20230227203415094](Redis.assets/image-20230227203415094.png)
 
 主从第一次是全量同步，但如果slave重启后同步，执行的是增量同步
 
-![image-20230227204500629](E:\学习资料\自学课程\数据库\Redis\images\image-20230227204500629.png)
+![image-20230227204500629](Redis.assets/image-20230227204500629.png)
 
 **注意**：repl_baklog大小有上限，写满后会覆盖最早的数据，如果slave断开时间过久，导致尚未备份的数据被覆盖，则无法基于log做增量同步，只能再次全量同步
 
@@ -696,7 +696,7 @@ redis-sentinel s3/sentinel.conf
 
 传统的缓存策略一般是请求到达Tomcat后，先查询Redis，如果未命中则查询数据库，如图：
 
-![image-20210821075259137](E:\学习资料\自学课程\数据库\Redis\images\image-20210821075259137.png)
+![image-20210821075259137](Redis.assets/image-20210821075259137.png)
 
 **存在下面的问题**：
 
