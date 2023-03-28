@@ -1124,3 +1124,553 @@ go-redis大部分时间都在等待网络写入/读取的操作，因此你可�
 应该确保服务器有良好的网络和高速缓存的 CPU。如果你有多个 CPU 内核，请考虑在单个服务器上运行多个 Redis 实例。
 
 请参见 [影响 redis 性能的因素](https://redis.io/topics/benchmarks#factors-impacting-redis-performance) 更多细节
+
+## Hook钩子
+
+go-redis允许配置Hook，在执行命令前后可以做一些工作，也可以改变命令的参数、执行结果等。
+
+Hook采用 `FIFO` 先进先出的模式，即最先添加的hook，最先被执行，以下是hook示例：
+
+```go
+// 添加的钩子，必须实现Hook接口
+// DialHook: 当创建网络连接时调用的hook
+// ProcessHook: 执行命令时调用的hook
+// ProcessPipelineHook: 执行管道命令时调用的hook
+type Hook interface {
+	DialHook(next DialHook) DialHook
+	ProcessHook(next ProcessHook) ProcessHook
+	ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook
+}
+
+// -------- hook1
+
+type Hook1 struct{}
+
+func (Hook1) DialHook(next redis.DialHook) redis.DialHook {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+        return next(ctx, network, addr)
+    }
+}
+func (Hook1) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		print("hook-1 start")
+		next(ctx, cmd)
+		print("hook-1 end")
+		return nil
+	}
+}
+func (Hook1) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []Cmder) error {
+		return next(ctx, cmds)
+    }
+}
+
+// -------- hook2
+
+type Hook2 struct{}
+
+func (Hook2) DialHook(next redis.DialHook) redis.DialHook {
+    return func(ctx context.Context, network, addr string) (net.Conn, error) {
+        next(ctx, network, addr)
+    }
+}
+func (Hook2) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+    return func(ctx context.Context, cmd Cmder) error {
+        print("hook-2 start")
+        next(ctx, cmd)
+        print("hook-2 end")
+        return nil
+    }
+}
+func (Hook2) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+    return func(ctx context.Context, cmds []Cmder) error {
+        return next(ctx, cmds)
+    }
+}
+
+// 把两个hook添加到client
+client.AddHook(Hook1{}, Hook2{})
+client.Get(ctx, "key")
+```
+
+如上所述，对client添加了hook1和hook2，2个钩子都对 `ProcessHook` 执行了print函数， 当执行命令时，调用的顺序如下：
+
+```bash
+hook-1 start -> hook-2 start -> exec redis cmd -> hook-2 end -> hook-1 end
+```
+
+在这里请注意：`next(...)` 操作很重要，是调用下一个hook，在hook调用链中，最后一个hook是redis执行命令操作。
+
+在示例中，如果hook1 ProcessHook 中如果不执行next，则不会执行hook2也不会执行redis命令。
+
+Hook支持三个挂钩点，分别是：
+
+1. DialHook: 当创建网络连接时调用的hook
+2. ProcessHook: 执行命令时调用的hook
+3. ProcessPipelineHook: 执行管道命令时调用的hook
+
+在不同的挂钩点你可以做不同的事，可以统计命令个数计算top key，也可以统计命令执行时间，也可以做一些其它你想要做的操作。
+
+在hook函数中，可以手动为cmd命令设置错误和返回值，调用方将收到你设置的错误和值，这对 `mock` 测试很有用， 在go-redis的 [redismock在新窗口打开](https://github.com/go-redis/redismock) 中就利用了hook截断要执行的命令， 对命令写入了测试中期望的返回值或错误。
+
+你也可以返回错误来终止函数，你的错误最终会传递到调用命令的地方。
+
+## 追踪监控
+
+### 什么是 OpenTelemetry
+
+[OpenTelemetry](https://uptrace.dev/opentelemetry/) 是一个开源的监控框架，用于 [OpenTelemetry tracing](https://uptrace.dev/opentelemetry/distributed-tracing.html) 日志、错误等，以及 `OpenTelemetry metrics` (各种指标)。
+
+Otel 旨在提供可观测性领域的标准化方案，解决观测数据的数据模型、采集、处理、导出等的标准化问题， 提供与三方 vendor 无关的服务。 OpenTelemetry 是一组标准和工具的集合，旨在管理观测类数据， 如 Traces、Metrics、Logs 等 (未来可能有新的观测类数据类型出现)。目前已经是业内的标准。
+
+### OpenTelemetry instrumentation
+
+go-redis有一个单独的OpenTelemetry模块工具 [redisotel](https://github.com/redis/go-redis/tree/master/extra/redisotel)：
+
+```bash
+go get github.com/redis/go-redis/extra/redisotel/v9
+```
+
+下面是使用示例，支持 `redis.Client`, `redis.ClusterClient`, `redis.Ring`：
+
+```go
+import (
+    "github.com/redis/go-redis/v9"
+    "github.com/redis/go-redis/extra/redisotel/v9"
+)
+
+rdb := redis.NewClient(&redis.Options{...})
+
+// 开启 tracing instrumentation.
+if err := redisotel.InstrumentTracing(rdb); err != nil {
+	panic(err)
+}
+
+// 开启 metrics instrumentation.
+if err := redisotel.InstrumentMetrics(rdb); err != nil {
+	panic(err)
+}
+```
+
+在使用go-redis执行命令时，需要传递 [trace context](https://uptrace.dev/opentelemetry/go-tracing.html#context)：
+
+```go
+ctx := req.Context()
+val, err := rdb.Get(ctx, "key").Result()
+```
+
+### Uptrace
+
+Uptrace 是 [开源APM](https://uptrace.dev/get/open-source-apm.html)，支持分布式跟踪、指标和日志， 可以使用它来监控应用程序并设置自动警报以通过电子邮件、Slack、Telegram 等接收通知。
+
+你可以使用DEB/RPM包或下载二进制文件来 [安装Uptrace](https://uptrace.dev/get/install.html)。
+
+redisotel 为执行的redis命令创建 [spans](https://uptrace.dev/opentelemetry/distributed-tracing.html#spans) ， 在发生错误是记录错误信息，以下是 [Uptrace](https://app.uptrace.dev/explore/1/?system=db%3Aredis&utm_source=goredis) 展示示例：
+
+![Redis trace](go-redis.assets/trace.png)
+
+在 [GitHub](https://github.com/redis/go-redis/tree/master/example/otel) 中你可以查看运行示例。
+
+你可以参照 [入门指南](https://uptrace.dev/get/get-started.html) 开始使用Uptrace。
+
+### Prometheus
+
+你还可以使用 [OpenTelemetry Prometheus exporter](https://uptrace.dev/opentelemetry/prometheus-metrics.html) 把 OpenTelemetry 指标发给 Prometheus。
+
+### 查看更多
+
+- [Open Source tracing tools](https://uptrace.dev/get/compare/distributed-tracing-tools.html)
+- [OpenTelemetry net/http](https://uptrace.dev/opentelemetry/instrumentations/go-net-http.html)
+- [OpenTelemetry gRPC](https://uptrace.dev/opentelemetry/instrumentations/go-grpc.html)
+- [OpenTelemetry Gin](https://uptrace.dev/opentelemetry/instrumentations/go-gin.html)
+- [OpenTelemetry GORM](https://uptrace.dev/opentelemetry/instrumentations/go-gorm.html)
+
+## Lua脚本
+
+### redis.Script
+
+go-redis支持Lua脚本 [redis.Script](https://pkg.go.dev/github.com/redis/go-redis/v9#Script)， 在 [这里](https://github.com/redis/go-redis/tree/master/example/lua-scripting) 查看使用示例。
+
+在下面的示例中，Lua脚本使用 GET, SET 实现了 `INCRBY`命令：
+
+```go
+var incrBy = redis.NewScript(`
+local key = KEYS[1]
+local change = ARGV[1]
+
+local value = redis.call("GET", key)
+if not value then
+  value = 0
+end
+
+value = value + change
+redis.call("SET", key, value)
+
+return value
+`)
+```
+
+你可以像这样运行脚本:
+
+```go
+keys := []string{"my_counter"}
+values := []interface{}{+1}
+num, err := incrBy.Run(ctx, rdb, keys, values...).Int()
+```
+
+在go-redis中，使用 [EVALSHA](https://redis.io/commands/evalsha) 执行脚本， 如果SHA不存在，则使用 [EVAL](https://redis.io/commands/eval)。
+
+你可以在 [GitHub](https://github.com/redis/go-redis/tree/master/example/lua-scripting) 中找到上面的示例。 更多的例子，你可以参照 [redis_rate](https://github.com/go-redis/redis_rate/blob/v9/lua.go)， 它实现了一个漏桶算法的 [限流器](https://redis.uptrace.dev/zh/guide/rate-limiting.html)。
+
+### Lua 和 Go 类型
+
+下面是Lua和Go语言的类型对照表，Lua的number是一个浮点型数字，用于存储整数和浮点数， 在Lua中不区分整数和浮点数，但Redis 总是将 Lua 数字转换为舍去小数部分的整数，例如3.14变成3， 如果要返回浮点值，将其作为字符串返回并用Go解析成float64。
+
+| Lua return                   | Go interface{}                |
+| ---------------------------- | ----------------------------- |
+| `number` (float64)           | `int64` (舍弃小数)            |
+| `string`                     | `string`                      |
+| `false`                      | `redis.Nil` error             |
+| `true`                       | `int64(1)`                    |
+| `{ok = "status"}`            | `string("status")`            |
+| `{err = "error message"}`    | `errors.New("error message")` |
+| `{"foo", "bar"}`             | `[]interface{}{"foo", "bar"}` |
+| `{foo = "bar", bar = "baz"}` | `[]interface{}{}` (不支持)    |
+
+### 调试 Lua 脚本
+
+调试 Lua 脚本的最简单方法是使用 `redis.log` 将消息写入 Redis 日志文件或 `redis-server` 输出的函数：
+
+```lua
+redis.log(redis.LOG_NOTICE, "key", key, "change", change)
+```
+
+你也可以参照 [Redis Lua 脚本调试器](https://redis.io/topics/ldb)
+
+### 传递多个值
+
+你可以 `for` 在 Lua 中使用循环来迭代传递的值，例如对数字求和：
+
+```lua
+local key = KEYS[1]
+
+local sum = redis.call("GET", key)
+if not sum then
+  sum = 0
+end
+
+local num_arg = #ARGV
+for i = 1, num_arg do
+  sum = sum + ARGV[i]
+end
+
+redis.call("SET", key, sum)
+
+return sum
+```
+
+结果:
+
+```go
+sum, err := sum.Run(ctx, rdb, []string{"my_sum"}, 1, 2, 3).Int()
+fmt.Println(sum, err)
+// Output: 6 nil
+```
+
+### 循环 continue
+
+Lua 循环中不支持 continue 语法，不过你可以使用嵌套repeat循环和break语句来模拟它：
+
+```lua
+local num_arg = #ARGV
+
+for i = 1, num_arg do
+repeat
+
+  if true then
+    do break end -- continue
+  end
+
+until true
+end
+```
+
+### 错误处理
+
+默认情况下，redis.call函数会引发 Lua 错误并停止服务， 如果要捕获错误，需要使用redis.pcall返回带有err字段的 Lua table：
+
+```lua
+local result = redis.pcall("rename", "foo", "bar")
+if type(result) == 'table' and result.err then
+  redis.log(redis.LOG_NOTICE, "rename failed", result.err)
+end
+```
+
+要返回自定义错误，请使用 Lua table:
+
+```lua
+return {err = "error message goes here"}
+```
+
+## 限速器
+
+[go-redis/redis_rate](https://github.com/go-redis/redis_rate) 库实现了一个漏桶调度算法（又名通用信元速率算法）。
+
+如下安装：
+
+```bash
+go get github.com/redis/go-redis_rate/v9
+```
+
+redis_rate 支持所有类型的 go-redis 客户端。
+
+```go
+rdb := redis.NewClient(&redis.Options{
+    Addr: "localhost:6379",
+})
+
+
+limiter := redis_rate.NewLimiter(rdb)
+res, err := limiter.Allow(ctx, "project:123", redis_rate.PerSecond(10))
+if err != nil {
+    panic(err)
+}
+
+fmt.Println("allowed", res.Allowed, "remaining", res.Remaining)
+```
+
+以下示例演示如何在 [bunrouter](https://github.com/uptrace/bunrouter/tree/master/example/rate-limiting) 中使用redis_rate用于 HTTP 速率限制的中间件：
+
+```go
+func rateLimit(next bunrouter.HandlerFunc) bunrouter.HandlerFunc {
+    return func(w http.ResponseWriter, req bunrouter.Request) error {
+        res, err := limiter.Allow(req.Context(), "project:123", redis_rate.PerMinute(10))
+        if err != nil {
+            return err
+        }
+
+        h := w.Header()
+        h.Set("RateLimit-Remaining", strconv.Itoa(res.Remaining))
+
+        if res.Allowed == 0 {
+            // We are rate limited.
+
+            seconds := int(res.RetryAfter / time.Second)
+            h.Set("RateLimit-RetryAfter", strconv.Itoa(seconds))
+
+            // Stop processing and return the error.
+            return ErrRateLimited
+        }
+
+        // Continue processing as normal.
+        return next(w, req)
+    }
+}
+```
+
+## 迭代Key
+
+### 遍历Key
+
+使用 `KEYS prefix:*` 命令可以遍历前缀为prefix的所有key，但如果redis中有上百万或更多的key，会变得非常慢。
+
+go-redis提供了 [SCAN](https://redis.io/commands/scan) 来迭代遍历前缀为prefix的key：
+
+```go
+var cursor uint64
+for {
+	var keys []string
+	var err error
+	keys, cursor, err = rdb.Scan(ctx, cursor, "prefix:*", 0).Result()
+	if err != nil {
+		panic(err)
+	}
+
+	for _, key := range keys {
+		fmt.Println("key", key)
+	}
+
+	// 没有更多key了
+	if cursor == 0 {
+		break
+	}
+}
+```
+
+上面的代码也可以简化成:
+
+```go
+iter := rdb.Scan(ctx, 0, "prefix:*", 0).Iterator()
+for iter.Next(ctx) {
+	fmt.Println("keys", iter.Val())
+}
+if err := iter.Err(); err != nil {
+	panic(err)
+}
+```
+
+### 集合和哈希类型
+
+你可以使用 `iterate` 来迭代redis集合:
+
+```go
+iter := rdb.SScan(ctx, "set-key", 0, "prefix:*", 0).Iterator()
+```
+
+哈希类型:
+
+```go
+iter := rdb.HScan(ctx, "hash-key", 0, "prefix:*", 0).Iterator()
+iter := rdb.ZScan(ctx, "sorted-hash-key", 0, "prefix:*", 0).Iterator()
+```
+
+### Cluster 和 Ring
+
+如果你使用的是 [Redis Cluster](https://redis.uptrace.dev/zh/guide/cluster.html) 或 [Redis Ring](https://redis.uptrace.dev/zh/guide/ring.html)，需要分别扫描集群每个节点：
+
+```go
+err := rdb.ForEachMaster(ctx, func(ctx context.Context, rdb *redis.Client) error {
+	iter := rdb.Scan(ctx, 0, "prefix:*", 0).Iterator()
+
+	...
+
+	return iter.Err()
+})
+if err != nil {
+	panic(err)
+}
+```
+
+### 删除无过期时间的Key
+
+你可以使用 `SCAN` 删除没有 TTL 的key:
+
+```go
+iter := rdb.Scan(ctx, 0, "", 0).Iterator()
+
+for iter.Next(ctx) {
+	key := iter.Val()
+
+    d, err := rdb.TTL(ctx, key).Result()
+    if err != nil {
+        panic(err)
+    }
+
+    if d == -1 { // -1 means no TTL
+        if err := rdb.Del(ctx, key).Err(); err != nil {
+            panic(err)
+        }
+    }
+}
+
+if err := iter.Err(); err != nil {
+	panic(err)
+}
+```
+
+你也可以使用管道提高效率，请参见 [示例](https://github.com/redis/go-redis/tree/master/example/del-keys-without-ttl)
+
+## 结果集映射
+
+go-redis为返回多个key-val的命令提供了一个映射模块将值扫描到结构体中，例如： `HGetAll`、 `HMGet`、 `MGet` 命令。
+
+你可以使用 `redis` 标签来修改字段名称或忽略一些字段，用法和go json类似：
+
+```go
+type Model struct {
+	Str1    string   `redis:"str1"`
+	Str2    string   `redis:"str2"`
+	Int     int      `redis:"int"`
+	Bool    bool     `redis:"bool"`
+	Ignored struct{} `redis:"-"`
+}
+```
+
+准备一些测试数据：
+
+```go
+rdb := redis.NewClient(&redis.Options{
+	Addr: ":6379",
+})
+
+if _, err := rdb.Pipelined(ctx, func(rdb redis.Pipeliner) error {
+	rdb.HSet(ctx, "key", "str1", "hello")
+	rdb.HSet(ctx, "key", "str2", "world")
+	rdb.HSet(ctx, "key", "int", 123)
+	rdb.HSet(ctx, "key", "bool", 1)
+	return nil
+}); err != nil {
+	panic(err)
+}
+```
+
+可以使用 `HGetAll` 命令，把结果映射到 `model1` 变量中:
+
+```go
+var model1 Model
+// 扫描所有字段到model1
+if err := rdb.HGetAll(ctx, "key").Scan(&model1); err != nil {
+	panic(err)
+}
+```
+
+或 `HMGet` 命令:
+
+```go
+var model2 Model
+if err := rdb.HMGet(ctx, "key", "str1", "int").Scan(&model2); err != nil {
+	panic(err)
+}
+```
+
+你可以在 [GitHub](https://github.com/redis/go-redis/tree/master/example/scan-struct) 中找到上面的示例。
+
+同样的，也可以把struct字段值写入到redis中，比如 `MSet`、`HSet` 命令：
+
+```go
+if err := rdb.HSet(ctx, "key", model1).Err(); err != nil {
+	panic(err)
+}
+```
+
+## HyperLoglog
+
+HyperLogLog 是用来做基数统计的算法，它提供不精确去重计数方案，标准误差是0.81%。 常用命令如下：
+
+- [PFADD](https://redis.io/commands/pfadd) 将元素添加到集合中。
+- [PFCOUNT  ](https://redis.io/commands/pfcount) 返回计算出的数量。
+
+这里查看 [示例](https://github.com/redis/go-redis/tree/master/example/hll):
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/redis/go-redis/v9"
+)
+
+func main() {
+	ctx := context.Background()
+
+	rdb := redis.NewClient(&redis.Options{
+		Addr: ":6379",
+	})
+	_ = rdb.FlushDB(ctx).Err()
+
+	for i := 0; i < 10; i++ {
+		if err := rdb.PFAdd(ctx, "myset", fmt.Sprint(i)).Err(); err != nil {
+			panic(err)
+		}
+	}
+
+	card, err := rdb.PFCount(ctx, "myset").Result()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("set cardinality", card)
+}
+```
